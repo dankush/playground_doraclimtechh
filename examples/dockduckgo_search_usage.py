@@ -1,166 +1,117 @@
 import time
 import random
+import requests
 from typing import List, Dict
 from duckduckgo_search import DDGS
-from random import uniform
 import logging
+import warnings
+import sys
+from urllib3.exceptions import NotOpenSSLWarning
+
+warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+sys.path.append('.')
+from config import TELEGRAM_TOPIC_CONFIGS, ChatTopic
+qa_ai_config = TELEGRAM_TOPIC_CONFIGS[ChatTopic.QA_WITH_AI]
+TELEGRAM_BOT_TOKEN = qa_ai_config.token
+TELEGRAM_CHAT_ID = qa_ai_config.chat_id
 
 
-def simple_duckduckgo_search(query: str, max_results: int = 5):
-    """Perform a simple DuckDuckGo search and print the results."""
-    with DDGS() as ddgs:
-        results = list(ddgs.text(query, max_results=max_results))
-        for i, result in enumerate(results, 1):
-            print(f"\n{i}. {result['title']}")
-            print(f"   URL: {result['href']}")
-            print(f"   Snippet: {result['body']}")
+def send_telegram_message(message: str):
+    """Send a message to the Telegram group."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    response = requests.post(url, json=payload)
+    
+    if response.status_code == 200:
+        logging.info("Message sent to Telegram successfully.")
+    else:
+        logging.error(f"Failed to send message: {response.text}")
+
+
+def duckduckgo_search_with_retries(query: str, max_results: int = 10, days_ago: int = 7, retries: int = 3, use_domain_filter: bool = False) -> List[Dict[str, str]]:
+    """
+    Perform a DuckDuckGo search with retry logic to handle rate limits.
+    """
+    results = []
+    attempts = 0
+    backoff = 2  # Start with 2-second wait time
+    
+    while attempts < retries:
+        try:
+            with DDGS() as ddgs:
+                time_filter = "w" if days_ago == 7 else "d" if days_ago == 1 else "m" if days_ago == 30 else "w"
+                search_query = query
+                
+                if use_domain_filter:
+                    allowed_domains = [
+                        "testguild.com", "softwaretestingmagazine.com", "techtarget.com",
+                        "testing.googleblog.com", "saucelabs.com", "medium.com",
+                        "ministryoftesting.com", "qamadness.com", "googl.com"
+                    ]
+                    search_query = f"site:({' OR site:'.join(allowed_domains)}) {search_query}"
+                search_results = list(ddgs.text(
+                    search_query,
+                    max_results=max_results,
+                    timelimit=time_filter
+                ))
+                for result in search_results:
+                    date = result.get("datePublished", result.get("date", "No Date"))
+                    results.append({
+                        "title": result.get("title", "No Title"),
+                        "url": result.get("href", "No URL"),
+                        "snippet": result.get("body", "No Snippet"),
+                        "date": date
+                    })
+                
+                return results
+        except Exception as e:
+            logging.warning(f"Search attempt {attempts + 1} failed: {str(e)}")
+            attempts += 1
+            time.sleep(backoff)
+            backoff *= 2  # Exponential backoff
+    
+    logging.error("DuckDuckGo search failed after retries.")
+    return results
+
+
+def format_results_for_telegram(results: List[Dict[str, str]]) -> str:
+    """Format the search results into a message suitable for Telegram."""
+    if not results:
+        return "No relevant articles found for your query."
+    
+    message = "🔍 *QA & AI Articles* 🔍\n\n"
+    MAX_SNIPPET_LENGTH = 200
+    MAX_RESULTS = 10
+    
+    for i, result in enumerate(results[:MAX_RESULTS], 1):
+        message += f"*{i}. {result['title'][:100]}*\n"
+        # message += f"📅 {result['date']}\n"
+        message += f"📌 [Read more]({result['url']})\n"
+        message += f"📝 {result['snippet'][:MAX_SNIPPET_LENGTH]}...\n\n"
+    
+    if len(message) > 4000:
+        return message[:3900] + "\n\n... (truncated)"
+    
+    return message
+
+
+def main():
+    """Main function to run the search and send results to Telegram."""
+    query = "QA with AI tips, solutions and examples 2025" # Define your search query here
+    logging.info(f"Searching for: {query}")
+    
+    results = duckduckgo_search_with_retries(query, max_results=10)
+    formatted_message = format_results_for_telegram(results)
+    
+    send_telegram_message(formatted_message)
+
 
 if __name__ == "__main__":
-    search_query = "QA automation best practices 2025"
-    print(f"Searching for: {search_query}\n")
-    simple_duckduckgo_search(search_query)
-
-exit()
-# # Setup logging
-# logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-# # Global delay settings and maximum retry attempts
-# BASE_DELAY = 5
-# MAX_RETRIES = 3
-
-# # List of user-agents for rotation
-# USER_AGENTS = [
-#     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
-#     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15",
-#     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36"
-# ]
-
-# # List of proxies for rotation (if available; leave empty if not)
-# PROXIES = [
-#     # Example proxies:
-#     # "http://proxy1.example.com:8080",
-#     # "http://proxy2.example.com:8080",
-# ]
-
-# # Simple in-memory cache for query results
-# CACHE = {}
-
-# # Define target QA resources
-# QA_RESOURCES = [
-#     "testguild.com/blog",
-#     "softwaretestingmagazine.com",
-#     "techtarget.com/searchsoftwarequality",
-#     "testing.googleblog.com",
-#     "saucelabs.com/blog",
-#     "medium.com",
-#     "ministryoftesting.com",
-#     "qamadness.com",
-# ]
-
-# def get_random_user_agent() -> str:
-#     """Select a random user-agent string."""
-#     return random.choice(USER_AGENTS)
-
-# def get_random_proxy() -> Dict[str, str]:
-#     """Select a random proxy if available."""
-#     if PROXIES:
-#         proxy = random.choice(PROXIES)
-#         return {"http": proxy, "https": proxy}
-#     return None
-
-# def exponential_backoff_delay(attempt: int) -> float:
-#     """
-#     Calculate an exponential backoff delay with jitter.
-#     Delay = BASE_DELAY * (2^attempt) + random jitter.
-#     """
-#     jitter = uniform(0, 1)
-#     return BASE_DELAY * (2 ** attempt) + jitter
-
-# def search_qa_articles(query: str, max_results: int = 3) -> List[Dict[str, str]]:
-#     """
-#     Search for recent QA articles with AI initiatives from specified resources.
-    
-#     Args:
-#         query (str): The search query (e.g., "QA with AI initiatives 2025").
-#         max_results (int): Maximum number of results per resource.
-    
-#     Returns:
-#         List[Dict[str, str]]: A list of results with title, URL, and snippet.
-#     """
-#     results = []
-#     with DDGS() as ddgs:
-#         for site in QA_RESOURCES:
-#             cache_key = f"{site}:{query}:{max_results}"
-#             if cache_key in CACHE:
-#                 logging.info(f"Cache hit for {site}")
-#                 site_results = CACHE[cache_key]
-#             else:
-#                 retries = 0
-#                 site_results = []
-#                 while retries < MAX_RETRIES:
-#                     # Add delay between requests with small random variation
-#                     time.sleep(BASE_DELAY + uniform(0, 0.5))
-                    
-#                     # Randomize user-agent and proxy for each attempt
-#                     user_agent = get_random_user_agent()
-#                     proxy = get_random_proxy()
-                    
-#                     # Note: duckduckgo_search library may not expose header/proxy parameters;
-#                     # these values are included to illustrate best practices.
-                    
-#                     # Construct site-specific query with a time filter
-#                     search_query = f"{query} site:{site} -inurl:(signup login)"
-#                     try:
-#                         logging.info(f"Searching {site} with query: {search_query}")
-#                         # Fetch results, using 'timelimit' for recent (last week) content
-#                         site_results = list(ddgs.text(search_query, max_results=max_results, timelimit="w"))
-#                         CACHE[cache_key] = site_results  # Cache the successful results
-#                         break  # Exit loop on successful search
-#                     except Exception as e:
-#                         error_str = str(e)
-#                         if "202" in error_str or "Ratelimit" in error_str:
-#                             wait_time = exponential_backoff_delay(retries)
-#                             logging.warning(f"Rate limit encountered for {site}. "
-#                                             f"Retrying in {wait_time:.2f} seconds... (Attempt {retries + 1})")
-#                             time.sleep(wait_time)
-#                         else:
-#                             logging.error(f"Error searching {site}: {e}")
-#                             break
-#                         retries += 1
-#                 if not site_results:
-#                     logging.error(f"No results for {site} after {MAX_RETRIES} retries.")
-#             if site_results:
-#                 for result in site_results:
-#                     results.append({
-#                         "title": result.get("title", "No Title"),
-#                         "url": result.get("href", "No URL"),
-#                         "snippet": result.get("body", "No Snippet")
-#                     })
-#     return results
-
-# def display_results(results: List[Dict[str, str]]) -> None:
-#     """Display search results in a user-friendly format."""
-#     if not results:
-#         print("No results found within the last week.")
-#         return
-    
-#     print("\n=== Latest QA Articles with AI Initiatives (Last Week) ===")
-#     for i, result in enumerate(results, 1):
-#         print(f"\n{i}. {result['title']}")
-#         print(f"   URL: {result['url']}")
-#         print(f"   Snippet: {result['snippet'][:150]}...")
-
-# def main():
-#     """Main function to run the search."""
-#     query = "QA with AI initiatives 2025"
-#     print(f"Searching for: {query} (published in the last week)")
-#     results = search_qa_articles(query, max_results=3)
-#     display_results(results)
-
-# if __name__ == "__main__":
-#     try:
-#         main()
-#     except ImportError as e:
-#         print(f"Missing dependency: {e}. Please install 'duckduckgo-search' via pip.")
-#     except Exception as e:
-#         print(f"An error occurred: {e}")
+    main()
